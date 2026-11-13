@@ -1,7 +1,6 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/task_model.dart';
+import '../services/firebase_service.dart';
 
 class WalletScreen extends StatefulWidget {
   final VoidCallback onBalanceChanged;
@@ -13,6 +12,7 @@ class WalletScreen extends StatefulWidget {
 }
 
 class _WalletScreenState extends State<WalletScreen> {
+  bool isLoading = true;
   int coins = 0;
   String userEmail = '';
   List<Map<String, dynamic>> transactions = [];
@@ -24,31 +24,23 @@ class _WalletScreenState extends State<WalletScreen> {
     _loadWalletData();
   }
 
-  String _todayStr() {
-    final now = DateTime.now();
-    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-  }
-
   Future<void> _loadWalletData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final rawHistory = prefs.getStringList('wallet_transactions') ?? [];
+    try {
+      final profile = await FirebaseService.getUserProfile();
+      final txList = await FirebaseService.getUserTransactions();
 
-    final List<Map<String, dynamic>> parsedList = [];
-    for (final item in rawHistory) {
-      try {
-        final decoded = jsonDecode(item);
-        if (decoded is Map) {
-          parsedList.add(Map<String, dynamic>.from(decoded));
-        }
-      } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        coins = (profile['coins'] as num?)?.toInt() ?? 0;
+        userEmail = profile['email']?.toString() ?? FirebaseService.currentEmail;
+        transactions = txList;
+        isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isLoading = false);
+      _showSnack('वॉलेट लोड करने में दिक्कत आई: $e', isError: true);
     }
-
-    if (!mounted) return;
-    setState(() {
-      coins = prefs.getInt('user_coins') ?? 0;
-      userEmail = prefs.getString('user_email') ?? '';
-      transactions = parsedList;
-    });
   }
 
   Future<void> _processWithdrawal(
@@ -56,83 +48,48 @@ class _WalletScreenState extends State<WalletScreen> {
     String method,
     String destination,
   ) async {
-    final prefs = await SharedPreferences.getInstance();
-    final currentCoins = prefs.getInt('user_coins') ?? 0;
+    try {
+      await FirebaseService.submitWithdrawal(
+        withdrawCoins: withdrawCoins,
+        method: method,
+        destination: destination,
+      );
 
-    if (currentCoins < withdrawCoins) {
-      _showSnack('पर्याप्त कॉइन्स नहीं हैं!', isError: true);
-      return;
-    }
+      await _loadWalletData();
+      widget.onBalanceChanged();
 
-    final updatedCoins = currentCoins - withdrawCoins;
-    await prefs.setInt('user_coins', updatedCoins);
-
-    final rawHistory = prefs.getStringList('wallet_transactions') ?? [];
-    final newTx = jsonEncode({
-      'title': '$method Withdrawal ($destination)',
-      'coins': withdrawCoins,
-      'type': 'debit',
-      'status': 'Pending (24-48 Hrs)',
-      'date': _todayStr(),
-    });
-    rawHistory.insert(0, newTx);
-    await prefs.setStringList('wallet_transactions', rawHistory);
-
-    await _loadWalletData();
-    widget.onBalanceChanged();
-
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green, size: 28),
-            SizedBox(width: 8),
-            Text('Request Submitted!'),
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 28),
+              SizedBox(width: 8),
+              Text('Request Submitted!'),
+            ],
+          ),
+          content: Text(
+            'आपकी ₹${DemoTaskData.coinsToRupees(withdrawCoins)} ($method) की रिक्वेस्ट क्लाउड सर्वर पर सबमिट हो गई है।\n\n'
+            'Destination: $destination\n'
+            'Status: 24-48 घंटे में वेरिफिकेशन के बाद पेमेंट भेज दिया जाएगा।',
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF0F766E),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('ठीक है'),
+            ),
           ],
         ),
-        content: Text(
-          'आपकी ₹${DemoTaskData.coinsToRupees(withdrawCoins)} ($method) की रिक्वेस्ट सबमिट हो गई है।\n\n'
-          'Destination: $destination\n'
-          'Status: 24-48 घंटे में वेरिफिकेशन के बाद पेमेंट भेज दिया जाएगा।',
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF0F766E),
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('ठीक है'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // डेवलपर टेस्टिंग के लिए +200 कॉइन जोड़ने का हेल्पर (लॉन्च से पहले हटा दें)
-  Future<void> _addDemoTestCoins() async {
-    final prefs = await SharedPreferences.getInstance();
-    final updated = (prefs.getInt('user_coins') ?? 0) + 200;
-    await prefs.setInt('user_coins', updated);
-
-    final rawHistory = prefs.getStringList('wallet_transactions') ?? [];
-    rawHistory.insert(
-      0,
-      jsonEncode({
-        'title': 'Developer Test Bonus',
-        'coins': 200,
-        'type': 'credit',
-        'date': _todayStr(),
-      }),
-    );
-    await prefs.setStringList('wallet_transactions', rawHistory);
-
-    await _loadWalletData();
-    widget.onBalanceChanged();
-    _showSnack('⚡ टेस्टिंग के लिए +200 Coins (₹20) जोड़े गए!');
+      );
+    } catch (e) {
+      _showSnack('Withdrawal फेल हुआ: $e', isError: true);
+    }
   }
 
   void _openWithdrawSheet() {
@@ -170,6 +127,10 @@ class _WalletScreenState extends State<WalletScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
     final progress = (coins / minWithdrawCoins).clamp(0.0, 1.0);
     final remaining = (minWithdrawCoins - coins).clamp(0, minWithdrawCoins);
 
@@ -178,7 +139,6 @@ class _WalletScreenState extends State<WalletScreen> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // 1. Main Wallet Balance Card
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -203,7 +163,7 @@ class _WalletScreenState extends State<WalletScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'उपलब्ध बैलेंस (Available)',
+                      'लाइव क्लाउड बैलेंस',
                       style: TextStyle(color: Colors.white70, fontSize: 13),
                     ),
                     Text(
@@ -243,8 +203,6 @@ class _WalletScreenState extends State<WalletScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-
-                // Minimum Withdrawal Progress Bar
                 LinearProgressIndicator(
                   value: progress,
                   minHeight: 8,
@@ -260,7 +218,6 @@ class _WalletScreenState extends State<WalletScreen> {
                   style: const TextStyle(color: Colors.white, fontSize: 12),
                 ),
                 const SizedBox(height: 16),
-
                 SizedBox(
                   width: double.infinity,
                   height: 48,
@@ -283,26 +240,7 @@ class _WalletScreenState extends State<WalletScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 12),
-
-          // Developer Test Helper (केवल टेस्टिंग के लिए)
-          OutlinedButton.icon(
-            onPressed: _addDemoTestCoins,
-            icon: const Icon(Icons.bolt, color: Colors.orange),
-            label: const Text(
-              '🧪 Test Mode: +200 Coins जोड़कर Withdraw चेक करें',
-              style: TextStyle(fontSize: 12),
-            ),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
           const SizedBox(height: 20),
-
-          // 2. Transaction History Header
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -317,7 +255,6 @@ class _WalletScreenState extends State<WalletScreen> {
             ],
           ),
           const SizedBox(height: 10),
-
           if (transactions.isEmpty)
             Container(
               padding: const EdgeInsets.all(24),
@@ -325,19 +262,13 @@ class _WalletScreenState extends State<WalletScreen> {
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: Column(
+              child: const Column(
                 children: [
-                  Icon(Icons.receipt_long, size: 48, color: Colors.grey.shade300),
-                  const SizedBox(height: 8),
-                  const Text(
+                  Icon(Icons.receipt_long, size: 48, color: Colors.grey),
+                  SizedBox(height: 8),
+                  Text(
                     'अभी कोई ट्रांजैक्शन नहीं है',
                     style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Daily Check-in या 10-मिनट का टास्क पूरा करने पर यहाँ आपकी कमाई दिखेगी।',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                 ],
               ),
@@ -345,8 +276,8 @@ class _WalletScreenState extends State<WalletScreen> {
           else
             ...transactions.map((tx) {
               final isDebit = tx['type'] == 'debit';
-              final txCoins = tx['coins'] ?? 0;
-              final status = tx['status']?.toString();
+              final txCoins = (tx['coins'] as num?)?.toInt() ?? 0;
+              final status = tx['status']?.toString() ?? 'Credited';
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 10),
@@ -370,12 +301,14 @@ class _WalletScreenState extends State<WalletScreen> {
                     ),
                   ),
                   subtitle: Text(
-                    status != null
-                        ? '${tx['date']} • $status'
-                        : '${tx['date']} • Credited',
+                    '${tx['date']} • $status',
                     style: TextStyle(
                       fontSize: 11,
-                      color: isDebit ? Colors.orange.shade800 : Colors.grey.shade600,
+                      color: isDebit
+                          ? (status.contains('Paid')
+                              ? Colors.green.shade700
+                              : Colors.orange.shade800)
+                          : Colors.grey.shade600,
                     ),
                   ),
                   trailing: Text(
@@ -383,7 +316,8 @@ class _WalletScreenState extends State<WalletScreen> {
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 15,
-                      color: isDebit ? Colors.red.shade700 : Colors.green.shade700,
+                      color:
+                          isDebit ? Colors.red.shade700 : Colors.green.shade700,
                     ),
                   ),
                 ),
@@ -395,7 +329,6 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 }
 
-/// Withdrawal Bottom Sheet (UPI और Redeem Code चुनने का फॉर्म)
 class _WithdrawBottomSheet extends StatefulWidget {
   final int currentCoins;
   final String userEmail;
@@ -487,8 +420,6 @@ class _WithdrawBottomSheetState extends State<_WithdrawBottomSheet> {
                 style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
               ),
               const SizedBox(height: 16),
-
-              // Method Selector
               const Text(
                 '1. पेमेंट तरीका चुनें:',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
@@ -515,8 +446,6 @@ class _WithdrawBottomSheetState extends State<_WithdrawBottomSheet> {
                 }).toList(),
               ),
               const SizedBox(height: 16),
-
-              // Amount Selector
               const Text(
                 '2. अमाउंट चुनें:',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
@@ -544,8 +473,6 @@ class _WithdrawBottomSheetState extends State<_WithdrawBottomSheet> {
                 }).toList(),
               ),
               const SizedBox(height: 16),
-
-              // UPI ID or Email Input
               TextFormField(
                 controller: _destController,
                 decoration: InputDecoration(
@@ -576,7 +503,6 @@ class _WithdrawBottomSheetState extends State<_WithdrawBottomSheet> {
                 },
               ),
               const SizedBox(height: 20),
-
               SizedBox(
                 height: 50,
                 child: ElevatedButton(

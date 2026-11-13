@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/task_model.dart';
-import '../services/app_storage.dart';
+import '../services/firebase_service.dart';
 
 class AdminPanelScreen extends StatefulWidget {
   const AdminPanelScreen({super.key});
@@ -14,14 +13,12 @@ class AdminPanelScreen extends StatefulWidget {
 class _AdminPanelScreenState extends State<AdminPanelScreen> {
   final TextEditingController _pinController = TextEditingController();
   bool isUnlocked = false;
+  bool isLoadingData = true;
   String savedPin = '1234';
 
   List<AppTask> allTasks = [];
   List<Map<String, dynamic>> withdrawals = [];
-  String testerEmail = '';
-  String testerName = '';
-  String deviceId = '';
-  int userCoins = 0;
+  List<Map<String, dynamic>> testers = [];
 
   @override
   void initState() {
@@ -36,22 +33,28 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
   }
 
   Future<void> _initAdminData() async {
-    final pin = await AppStorage.getAdminPin();
-    final tasks = await AppStorage.getAllTasks();
-    final payouts = await AppStorage.getWithdrawals();
-    final prefs = await SharedPreferences.getInstance();
-    final devId = await AppStorage.getOrCreateDeviceId();
+    setState(() => isLoadingData = true);
+    try {
+      final pin = await FirebaseService.getAdminPin();
+      final tasks = await FirebaseService.getAllTasks();
+      final payouts = await FirebaseService.getAllWithdrawalsForAdmin();
+      final usersList = await FirebaseService.getAllTestersForAdmin();
 
-    if (!mounted) return;
-    setState(() {
-      savedPin = pin;
-      allTasks = tasks;
-      withdrawals = payouts;
-      testerEmail = prefs.getString('user_email') ?? 'No Email';
-      testerName = prefs.getString('user_name') ?? 'Tester';
-      userCoins = prefs.getInt('user_coins') ?? 0;
-      deviceId = devId;
-    });
+      if (!mounted) return;
+      setState(() {
+        savedPin = pin;
+        allTasks = tasks;
+        withdrawals = payouts;
+        testers = usersList;
+        isLoadingData = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isLoadingData = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('डेटा लोड एरर: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   void _verifyPin() {
@@ -76,7 +79,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
       ),
       builder: (_) => _AddTaskSheet(
         onSave: (newTask) async {
-          await AppStorage.addCustomTask(newTask);
+          await FirebaseService.addTask(newTask);
           await _initAdminData();
         },
       ),
@@ -84,11 +87,11 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
   }
 
   Future<void> _deleteTask(AppTask task) async {
-    await AppStorage.deleteTask(task.id);
+    await FirebaseService.deleteTask(task.id);
     await _initAdminData();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('"${task.appName}" हटा दिया गया!')),
+      SnackBar(content: Text('"${task.appName}" क्लाउड से हटा दिया गया!')),
     );
   }
 
@@ -97,9 +100,14 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     String newStatus,
     bool refund,
   ) async {
-    final rawIndex = item['rawIndex'] as int;
-    await AppStorage.updateWithdrawalStatus(
-      rawIndex: rawIndex,
+    final docId = item['docId']?.toString() ?? '';
+    final targetUid = item['uid']?.toString() ?? '';
+    final amtCoins = (item['coins'] as num?)?.toInt() ?? 0;
+
+    await FirebaseService.adminUpdateWithdrawal(
+      txDocId: docId,
+      targetUid: targetUid,
+      coins: amtCoins,
       newStatus: newStatus,
       refundCoins: refund,
     );
@@ -109,7 +117,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
       SnackBar(
         content: Text(
           refund
-              ? 'रिक्वेस्ट रिजेक्ट हुई और कॉइन्स यूज़र के वॉलेट में रिफंड हो गए!'
+              ? 'रिक्वेस्ट रिजेक्ट हुई और कॉइन्स वापस यूज़र के वॉलेट में रिफंड हो गए!'
               : 'पेमेंट स्टेटस "$newStatus" अपडेट हो गया!',
         ),
         backgroundColor: refund ? Colors.orange.shade800 : Colors.green,
@@ -117,10 +125,25 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
     );
   }
 
-  void _copyTesterGmail() {
-    Clipboard.setData(ClipboardData(text: testerEmail));
+  void _copyAllTesterGmails() {
+    final emails = testers
+        .map((t) => t['email']?.toString() ?? '')
+        .where((e) => e.isNotEmpty)
+        .join(', ');
+    if (emails.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('अभी कोई टेस्टर रजिस्टर्ड नहीं है!')),
+      );
+      return;
+    }
+
+    Clipboard.setData(ClipboardData(text: emails));
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Play Console के लिए "$testerEmail" कॉपी हो गया!')),
+      SnackBar(
+        content: Text(
+          'सभी ${testers.length} टेस्टर्स की Gmail IDs कॉपी हो गईं! अब Play Console में पेस्ट करें।',
+        ),
+      ),
     );
   }
 
@@ -146,12 +169,12 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
           ElevatedButton(
             onPressed: () async {
               if (controller.text.trim().length >= 4) {
-                await AppStorage.setAdminPin(controller.text.trim());
+                await FirebaseService.setAdminPin(controller.text.trim());
                 await _initAdminData();
                 if (ctx.mounted) Navigator.pop(ctx);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('नया Admin PIN सेव हो गया!')),
+                    const SnackBar(content: Text('नया Cloud Admin PIN सेव हो गया!')),
                   );
                 }
               }
@@ -166,7 +189,6 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 1. यदि अनलॉक नहीं है तो PIN स्क्रीन दिखाएं
     if (!isUnlocked) {
       return Scaffold(
         appBar: AppBar(
@@ -194,13 +216,13 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'Admin Control Panel',
+                      'Cloud Admin Control',
                       style:
                           TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Demo PIN: $savedPin',
+                      'PIN डालकर अनलॉक करें (डिफ़ॉल्ट: 1234)',
                       style: TextStyle(
                         color: Colors.indigo.shade700,
                         fontWeight: FontWeight.w600,
@@ -244,7 +266,6 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
       );
     }
 
-    // 2. अनलॉक होने के बाद पूरा 3-Tab Admin Panel
     final pendingCount = withdrawals
         .where((w) => (w['status']?.toString() ?? '').contains('Pending'))
         .length;
@@ -253,10 +274,15 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
       length: 3,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Admin Panel'),
+          title: const Text('Live Cloud Admin'),
           backgroundColor: const Color(0xFF1E293B),
           foregroundColor: Colors.white,
           actions: [
+            IconButton(
+              onPressed: _initAdminData,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+            ),
             IconButton(
               onPressed: _changePinDialog,
               icon: const Icon(Icons.key),
@@ -270,7 +296,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
             tabs: [
               Tab(text: 'Tasks (${allTasks.length})'),
               Tab(text: 'Payouts ($pendingCount)'),
-              const Tab(text: 'Testers'),
+              Tab(text: 'Testers (${testers.length})'),
             ],
           ),
         ),
@@ -281,230 +307,232 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
           icon: const Icon(Icons.add),
           label: const Text('नया ऐप जोड़ें'),
         ),
-        body: TabBarView(
-          children: [
-            // TAB 1: MANAGE TASKS
-            ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
-              children: [
-                if (allTasks.isEmpty)
-                  const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Text('कोई टास्क नहीं है। नीचे "+ नया ऐप जोड़ें" दबाएं।'),
-                    ),
+        body: isLoadingData
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                children: [
+                  // TAB 1: TASKS
+                  ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
+                    children: [
+                      if (allTasks.isEmpty)
+                        const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(32),
+                            child: Text('कोई टास्क नहीं है। नीचे "+ नया ऐप जोड़ें" दबाएं।'),
+                          ),
+                        ),
+                      ...allTasks.map((task) {
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: Colors.indigo.shade50,
+                              child: const Icon(Icons.android,
+                                  color: Color(0xFF4F46E5)),
+                            ),
+                            title: Text(
+                              task.appName,
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Text(
+                              '${task.packageName}\n${task.requiredMinutesPerDay} Min • ${task.totalTestingDays} Days • +${task.totalPotentialCoins} 🪙',
+                            ),
+                            isThreeLine: true,
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline,
+                                  color: Colors.red),
+                              onPressed: () => _deleteTask(task),
+                            ),
+                          ),
+                        );
+                      }),
+                      const SizedBox(height: 10),
+                      TextButton.icon(
+                        onPressed: () async {
+                          await FirebaseService.restoreDefaultTasks();
+                          await _initAdminData();
+                        },
+                        icon: const Icon(Icons.restore),
+                        label: const Text('डिफ़ॉल्ट डेमो ऐप्स वापस लाएं'),
+                      ),
+                    ],
                   ),
-                ...allTasks.map((task) {
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: Colors.indigo.shade50,
-                        child: const Icon(Icons.android, color: Color(0xFF4F46E5)),
-                      ),
-                      title: Text(
-                        task.appName,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Text(
-                        '${task.packageName}\n${task.requiredMinutesPerDay} Min • ${task.totalTestingDays} Days • +${task.totalPotentialCoins} 🪙',
-                      ),
-                      isThreeLine: true,
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline, color: Colors.red),
-                        onPressed: () => _deleteTask(task),
-                      ),
-                    ),
-                  );
-                }),
-                const SizedBox(height: 10),
-                TextButton.icon(
-                  onPressed: () async {
-                    await AppStorage.restoreDefaultTasks();
-                    await _initAdminData();
-                  },
-                  icon: const Icon(Icons.restore),
-                  label: const Text('डिफ़ॉल्ट डेमो ऐप्स वापस लाएं'),
-                ),
-              ],
-            ),
 
-            // TAB 2: WITHDRAWAL REQUESTS
-            withdrawals.isEmpty
-                ? const Center(
-                    child: Text('अभी कोई Withdrawal रिक्वेस्ट नहीं आई है।'),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
-                    itemCount: withdrawals.length,
-                    itemBuilder: (context, index) {
-                      final w = withdrawals[index];
-                      final status = w['status']?.toString() ?? 'Pending';
-                      final isPending = status.contains('Pending');
-                      final amtCoins = (w['coins'] as num?)?.toInt() ?? 0;
+                  // TAB 2: ALL USERS WITHDRAWALS
+                  withdrawals.isEmpty
+                      ? const Center(
+                          child: Text('अभी कोई Withdrawal रिक्वेस्ट नहीं है।'),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
+                          itemCount: withdrawals.length,
+                          itemBuilder: (context, index) {
+                            final w = withdrawals[index];
+                            final status =
+                                w['status']?.toString() ?? 'Pending';
+                            final isPending = status.contains('Pending');
+                            final amtCoins =
+                                (w['coins'] as num?)?.toInt() ?? 0;
 
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(14),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      w['title']?.toString() ?? 'Withdrawal',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    '₹${DemoTaskData.coinsToRupees(amtCoins)}',
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFF0F766E),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'Date: ${w['date']} • Coins: $amtCoins • Status: $status',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: isPending
-                                      ? Colors.orange.shade800
-                                      : Colors.green.shade700,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              if (isPending) ...[
-                                const SizedBox(height: 12),
-                                Row(
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Expanded(
-                                      child: ElevatedButton.icon(
-                                        onPressed: () => _handlePayoutAction(
-                                          w,
-                                          'Paid ✅',
-                                          false,
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            w['title']?.toString() ??
+                                                'Withdrawal',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                            ),
+                                          ),
                                         ),
-                                        icon: const Icon(Icons.check, size: 16),
-                                        label: const Text('Mark Paid'),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.green,
-                                          foregroundColor: Colors.white,
+                                        Text(
+                                          '₹${DemoTaskData.coinsToRupees(amtCoins)}',
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: Color(0xFF0F766E),
+                                          ),
                                         ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'User: ${w['userEmail'] ?? 'Unknown'}',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey.shade700),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Date: ${w['date']} • Coins: $amtCoins • $status',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: isPending
+                                            ? Colors.orange.shade800
+                                            : Colors.green.shade700,
+                                        fontWeight: FontWeight.w600,
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: OutlinedButton.icon(
-                                        onPressed: () => _handlePayoutAction(
-                                          w,
-                                          'Rejected (Refunded)',
-                                          true,
-                                        ),
-                                        icon: const Icon(
-                                          Icons.close,
-                                          size: 16,
-                                          color: Colors.red,
-                                        ),
-                                        label: const Text(
-                                          'Reject & Refund',
-                                          style: TextStyle(color: Colors.red),
-                                        ),
+                                    if (isPending) ...[
+                                      const SizedBox(height: 12),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: ElevatedButton.icon(
+                                              onPressed: () =>
+                                                  _handlePayoutAction(
+                                                w,
+                                                'Paid ✅',
+                                                false,
+                                              ),
+                                              icon: const Icon(Icons.check,
+                                                  size: 16),
+                                              label: const Text('Mark Paid'),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: Colors.green,
+                                                foregroundColor: Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: OutlinedButton.icon(
+                                              onPressed: () =>
+                                                  _handlePayoutAction(
+                                                w,
+                                                'Rejected (Refunded)',
+                                                true,
+                                              ),
+                                              icon: const Icon(
+                                                Icons.close,
+                                                size: 16,
+                                                color: Colors.red,
+                                              ),
+                                              label: const Text(
+                                                'Reject & Refund',
+                                                style: TextStyle(
+                                                    color: Colors.red),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    ),
+                                    ],
                                   ],
                                 ),
-                              ],
-                            ],
-                          ),
+                              ),
+                            );
+                          },
                         ),
-                      );
-                    },
-                  ),
 
-            // TAB 3: TESTERS & PLAY CONSOLE EXPORT
-            ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Active Tester (Google Play Console के लिए)',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
+                  // TAB 3: ALL CLOUD TESTERS + EXPORT
+                  ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: ElevatedButton.icon(
+                          onPressed: _copyAllTesterGmails,
+                          icon: const Icon(Icons.copy_all),
+                          label: Text(
+                            'सभी ${testers.length} टेस्टर्स की Gmail Copy करें',
                           ),
-                        ),
-                        const SizedBox(height: 12),
-                        ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: const CircleAvatar(
-                            backgroundColor: Color(0xFF4F46E5),
-                            child: Icon(Icons.person, color: Colors.white),
-                          ),
-                          title: Text(testerName),
-                          subtitle: Text('$testerEmail\nDevice ID: $deviceId'),
-                          trailing: Text(
-                            '🪙 $userCoins',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: _copyTesterGmail,
-                            icon: const Icon(Icons.copy),
-                            label: const Text(
-                              'Copy Gmail for Play Console Closed Testing',
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF4F46E5),
-                              foregroundColor: Colors.white,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF4F46E5),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
                             ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 14),
+                      ...testers.map((t) {
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ListTile(
+                            leading: const CircleAvatar(
+                              backgroundColor: Color(0xFF4F46E5),
+                              child: Icon(Icons.person, color: Colors.white),
+                            ),
+                            title: Text(
+                              t['name']?.toString() ?? 'Tester',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Text(
+                              '${t['email']}\nDevice: ${t['deviceId'] ?? 'N/A'}',
+                            ),
+                            isThreeLine: true,
+                            trailing: Text(
+                              '🪙 ${t['coins'] ?? 0}',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.shade50,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.amber.shade200),
-                  ),
-                  child: const Text(
-                    '💡 Pro Tip: जब आप इसमें Firebase जोड़ेंगे, तो यहाँ दुनिया भर के सभी टेस्टर्स की पूरी Gmail लिस्ट और सभी के विड्रॉल रिक्वेस्ट एक साथ लाइव दिखेंगे!',
-                    style: TextStyle(fontSize: 12, height: 1.5),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+                ],
+              ),
       ),
     );
   }
 }
 
-/// Admin द्वारा नया Task जोड़ने का फॉर्म
 class _AddTaskSheet extends StatefulWidget {
   final Future<void> Function(AppTask task) onSave;
 
@@ -530,6 +558,7 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
   final _bonusCoinsCtrl = TextEditingController(text: '200');
 
   String category = '14-Day Testing';
+  bool isSaving = false;
 
   @override
   void dispose() {
@@ -546,6 +575,7 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    setState(() => isSaving = true);
 
     final task = AppTask(
       id: 'task_${DateTime.now().millisecondsSinceEpoch}',
@@ -586,7 +616,7 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'नया Play Store टेस्टिंग ऐप जोड़ें',
+                'क्लाउड पर नया टेस्टिंग ऐप जोड़ें',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 14),
@@ -645,6 +675,7 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
                 controller: _optInCtrl,
                 decoration: const InputDecoration(
                   labelText: 'Play Store Opt-in Testing Link',
+                  hintText: 'https://play.google.com/apps/testing/com.yourapp',
                 ),
               ),
               const SizedBox(height: 10),
@@ -691,7 +722,7 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
               SizedBox(
                 height: 48,
                 child: ElevatedButton(
-                  onPressed: _save,
+                  onPressed: isSaving ? null : _save,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF4F46E5),
                     foregroundColor: Colors.white,
@@ -699,7 +730,9 @@ class _AddTaskSheetState extends State<_AddTaskSheet> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  child: const Text('Save & Publish Task'),
+                  child: isSaving
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text('Save & Publish to All Users'),
                 ),
               ),
             ],

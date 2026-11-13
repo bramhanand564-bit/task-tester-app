@@ -1,9 +1,7 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/task_model.dart';
-import '../services/app_storage.dart';
+import '../services/firebase_service.dart';
 import 'admin_panel_screen.dart';
 import 'auth_screen.dart';
 import 'task_detail_screen.dart';
@@ -20,6 +18,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
   int _currentTabIndex = 0;
   int _walletRefreshKey = 0;
   String _selectedCategory = 'All';
+  bool isInitialLoading = true;
 
   String name = 'Tester';
   String email = '';
@@ -40,97 +39,81 @@ class _HomeDashboardState extends State<HomeDashboard> {
     _loadDashboardData();
   }
 
-  String _getTodayDateString() {
-    final now = DateTime.now();
-    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-  }
-
   Future<void> _loadDashboardData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final tasks = await AppStorage.getAllTasks();
-    final devId = await AppStorage.getOrCreateDeviceId();
-    final lastCheckIn = prefs.getString('last_checkin_date') ?? '';
-    final today = _getTodayDateString();
+    try {
+      final profile = await FirebaseService.getUserProfile();
+      final tasks = await FirebaseService.getAllTasks();
+      final progressMap = await FirebaseService.getAllUserProgress();
+      final today = FirebaseService.todayStr();
 
-    final Map<String, int> daysMap = {};
-    final Map<String, bool> startedMap = {};
-    final Map<String, bool> claimedMap = {};
+      final Map<String, int> daysMap = {};
+      final Map<String, bool> startedMap = {};
+      final Map<String, bool> claimedMap = {};
 
-    for (final task in tasks) {
-      final doneDays = prefs.getInt('completed_days_${task.id}') ?? 0;
-      final started = (prefs.getBool('started_${task.id}') ?? false) ||
-          doneDays > 0 ||
-          (prefs.getInt('timer_start_ms_${task.id}') != null);
-      final claimedToday =
-          (prefs.getString('last_claim_date_${task.id}') ?? '') == today;
+      for (final task in tasks) {
+        final prog = progressMap[task.id];
+        final doneDays = (prog?['completedDays'] as num?)?.toInt() ?? 0;
+        final started = prog?['started'] == true || doneDays > 0;
+        final claimedToday =
+            (prog?['lastClaimDate']?.toString() ?? '') == today;
 
-      daysMap[task.id] = doneDays;
-      startedMap[task.id] = started;
-      claimedMap[task.id] = claimedToday;
+        daysMap[task.id] = doneDays;
+        startedMap[task.id] = started;
+        claimedMap[task.id] = claimedToday;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        allTasks = tasks;
+        name = profile['name']?.toString() ?? 'Tester';
+        email = profile['email']?.toString() ?? FirebaseService.currentEmail;
+        referralCode = profile['myReferralCode']?.toString() ?? 'TASK000';
+        deviceId = profile['deviceId']?.toString() ?? 'DEV-VERIFIED';
+        coins = (profile['coins'] as num?)?.toInt() ?? 0;
+        checkInStreak = (profile['checkInStreak'] as num?)?.toInt() ?? 0;
+        checkedInToday =
+            (profile['lastCheckInDate']?.toString() ?? '') == today;
+        taskCompletedDays = daysMap;
+        taskStartedMap = startedMap;
+        taskClaimedTodayMap = claimedMap;
+        isInitialLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isInitialLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('क्लाउड डेटा लोड करने में दिक्कत आई: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
-
-    if (!mounted) return;
-    setState(() {
-      allTasks = tasks;
-      deviceId = devId;
-      name = prefs.getString('user_name') ?? 'Tester';
-      email = prefs.getString('user_email') ?? '';
-      referralCode = prefs.getString('my_referral_code') ?? 'TASK000';
-      coins = prefs.getInt('user_coins') ?? 0;
-      checkInStreak = prefs.getInt('checkin_streak') ?? 0;
-      checkedInToday = (lastCheckIn == today);
-      taskCompletedDays = daysMap;
-      taskStartedMap = startedMap;
-      taskClaimedTodayMap = claimedMap;
-    });
   }
 
   Future<void> _claimDailyCheckIn() async {
     if (checkedInToday) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    final today = _getTodayDateString();
-    const rewardCoins = 15;
-
-    final newCoins = coins + rewardCoins;
-    final newStreak = checkInStreak + 1;
-
-    await prefs.setInt('user_coins', newCoins);
-    await prefs.setString('last_checkin_date', today);
-    await prefs.setInt('checkin_streak', newStreak);
-
-    final history = prefs.getStringList('wallet_transactions') ?? [];
-    history.insert(
-      0,
-      jsonEncode({
-        'title': 'Daily Check-in Bonus (Day $newStreak)',
-        'coins': rewardCoins,
-        'type': 'credit',
-        'date': today,
-      }),
-    );
-    await prefs.setStringList('wallet_transactions', history);
-
-    if (!mounted) return;
-    setState(() {
-      coins = newCoins;
-      checkInStreak = newStreak;
-      checkedInToday = true;
-      _walletRefreshKey++;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('🎉 बधाई हो! आज का +15 Daily Check-in Bonus मिल गया!'),
-        backgroundColor: Colors.green,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    try {
+      final reward = await FirebaseService.claimDailyCheckIn();
+      await _loadDashboardData();
+      if (!mounted) return;
+      setState(() => _walletRefreshKey++);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('🎉 बधाई हो! आज का +$reward Daily Check-in Bonus मिल गया!'),
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('is_logged_in', false);
+    await FirebaseService.logout();
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
@@ -203,7 +186,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     if (mounted) setState(() => _walletRefreshKey++);
   }
 
-  // ---------------- TAB 1: HOME (TASKS) ----------------
+  // ---------------- TAB 1: HOME ----------------
   Widget _buildHomeTab() {
     final filteredTasks = _selectedCategory == 'All'
         ? allTasks
@@ -314,8 +297,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // Daily Check-in Card
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -379,7 +360,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
             ),
           ),
           const SizedBox(height: 18),
-
           const Text(
             'Tasks चुनें और कमाएं',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
@@ -409,7 +389,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
             ),
           ),
           const SizedBox(height: 12),
-
           if (filteredTasks.isEmpty)
             const Padding(
               padding: EdgeInsets.all(24),
@@ -562,7 +541,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  // ---------------- TAB 2: MY ACTIVE TESTS ----------------
+  // ---------------- TAB 2: MY TESTS ----------------
   Widget _buildMyTestsTab() {
     final activeTasks =
         allTasks.where((t) => taskStartedMap[t.id] == true).toList();
@@ -686,7 +665,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  // ---------------- TAB 3: FULL WALLET ----------------
+  // ---------------- TAB 3: WALLET ----------------
   Widget _buildWalletTab() {
     return WalletScreen(
       key: ValueKey(_walletRefreshKey),
@@ -694,7 +673,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  // ---------------- TAB 4: PROFILE, ADMIN & RULES ----------------
+  // ---------------- TAB 4: PROFILE ----------------
   Widget _buildProfileTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -744,8 +723,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
         ),
         const SizedBox(height: 16),
-
-        // Refer & Earn Card
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -814,15 +791,14 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 child: OutlinedButton.icon(
                   onPressed: _copyInviteMessage,
                   icon: const Icon(Icons.share),
-                  label: const Text('WhatsApp / Telegram Invite मैसेज कॉपी करें'),
+                  label:
+                      const Text('WhatsApp / Telegram Invite मैसेज कॉपी करें'),
                 ),
               ),
             ],
           ),
         ),
         const SizedBox(height: 16),
-
-        // Admin Panel, Rules & Logout Card
         Card(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           child: Column(
@@ -836,13 +812,15 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   'Admin Panel (Owner Only)',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
-                subtitle: const Text('नए ऐप्स जोड़ें, पेमेंट अप्रूव करें (PIN: 1234)'),
+                subtitle:
+                    const Text('नए ऐप्स जोड़ें, पेमेंट अप्रूव करें (PIN: 1234)'),
                 trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                 onTap: _openAdminPanel,
               ),
               const Divider(height: 1),
               ListTile(
-                leading: const Icon(Icons.help_outline, color: Color(0xFF4F46E5)),
+                leading:
+                    const Icon(Icons.help_outline, color: Color(0xFF4F46E5)),
                 title: const Text('14-Day Testing के नियम & FAQ'),
                 trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                 onTap: _showFaqDialog,
@@ -852,7 +830,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 leading: const Icon(Icons.logout, color: Colors.red),
                 title: const Text(
                   'Logout करें',
-                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                  style:
+                      TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
                 ),
                 onTap: _logout,
               ),
@@ -893,7 +872,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
         ],
       ),
-      body: tabs[_currentTabIndex],
+      body: isInitialLoading
+          ? const Center(child: CircularProgressIndicator())
+          : tabs[_currentTabIndex],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentTabIndex,
         onDestinationSelected: (index) {

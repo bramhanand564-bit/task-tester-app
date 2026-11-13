@@ -1,10 +1,15 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'firebase_options.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_dashboard.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   runApp(const TaskTesterApp());
 }
 
@@ -41,48 +46,12 @@ class TaskTesterApp extends StatelessWidget {
   }
 }
 
-class SplashRouter extends StatefulWidget {
+class SplashRouter extends StatelessWidget {
   const SplashRouter({super.key});
 
   @override
-  State<SplashRouter> createState() => _SplashRouterState();
-}
-
-class _SplashRouterState extends State<SplashRouter> {
-  @override
-  void initState() {
-    super.initState();
-    _checkLoginStatus();
-  }
-
-  Future<void> _checkLoginStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    final isLoggedIn = prefs.getBool('is_logged_in') ?? false;
-
-    if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) =>
-            isLoggedIn ? const HomeDashboard() : const AuthScreen(),
-      ),
-    );
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(child: CircularProgressIndicator()),
-    );
-  }
-}
-
-/// AuthScreen से जुड़ने के लिए ब्रिज (ताकि AuthScreen में बदलाव न करना पड़े)
-class Part2HomePreview extends StatelessWidget {
-  const Part2HomePreview({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const HomeDashboard();
+    final user = FirebaseAuth.instance.currentUser;
+    return user != null ? const HomeDashboard() : const AuthScreen();
   }
 }

@@ -1,7 +1,7 @@
-import 'dart:math';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../main.dart';
+import '../services/firebase_service.dart';
+import 'home_dashboard.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -13,7 +13,6 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   final _formKey = GlobalKey<FormState>();
 
-  // true = Login फॉर्म दिखेगा, false = Sign Up फॉर्म दिखेगा
   bool isLoginMode = false;
   bool isPasswordVisible = false;
   bool isLoading = false;
@@ -33,13 +32,6 @@ class _AuthScreenState extends State<AuthScreen> {
     super.dispose();
   }
 
-  // यूज़र के लिए यूनीक Referral Code बनाने का लॉजिक (उदाहरण: TASK4821)
-  String _generateReferralCode() {
-    final random = Random();
-    final number = 1000 + random.nextInt(9000);
-    return 'TASK$number';
-  }
-
   void _showMessage(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -50,85 +42,82 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
+  String _friendlyAuthError(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'email-already-in-use':
+        return 'यह Gmail पहले से रजिस्टर्ड है! कृपया Login करें।';
+      case 'invalid-email':
+        return 'Gmail एड्रेस सही नहीं है।';
+      case 'weak-password':
+        return 'पासवर्ड कम से कम 6 अक्षर का मजबूत रखें।';
+      case 'user-not-found':
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'Gmail या Password गलत है!';
+      case 'network-request-failed':
+        return 'इंटरनेट कनेक्शन चेक करें।';
+      default:
+        return e.message ?? 'Authentication एरर आया है।';
+    }
+  }
+
   Future<void> _submitForm() async {
     if (!_formKey.currentState!.validate()) return;
 
     if (!isLoginMode && !agreedToRules) {
-      _showMessage('कृपया नियम (1 Device = 1 Account) स्वीकार करें।', isError: true);
+      _showMessage('कृपया 1 Phone = 1 Account नियम स्वीकार करें।', isError: true);
       return;
     }
 
     setState(() => isLoading = true);
 
-    final prefs = await SharedPreferences.getInstance();
-    final email = _emailController.text.trim().toLowerCase();
-    final password = _passwordController.text.trim();
-
-    if (isLoginMode) {
-      // --- LOGIN LOGIC ---
-      final savedEmail = prefs.getString('user_email');
-      final savedPassword = prefs.getString('user_password');
-
-      if (savedEmail == null) {
-        setState(() => isLoading = false);
-        _showMessage('कोई अकाउंट नहीं मिला! पहले Sign Up करें।', isError: true);
-        return;
-      }
-
-      if (email == savedEmail && password == savedPassword) {
-        await prefs.setBool('is_logged_in', true);
-        if (!mounted) return;
-        _goToHome();
+    try {
+      if (isLoginMode) {
+        await FirebaseService.login(
+          email: _emailController.text,
+          password: _passwordController.text,
+        );
       } else {
-        setState(() => isLoading = false);
-        _showMessage('Gmail या Password गलत है!', isError: true);
+        await FirebaseService.signUp(
+          name: _nameController.text,
+          email: _emailController.text,
+          password: _passwordController.text,
+          referralCode: _referralController.text,
+        );
       }
-    } else {
-      // --- SIGN UP LOGIC ---
-      final name = _nameController.text.trim();
-      final appliedReferral = _referralController.text.trim().toUpperCase();
-
-      // अगर यूज़र ने रेफरल कोड डाला है तो एक्स्ट्रा 25 कॉइन, वरना 50 वेलकम कॉइन
-      int welcomeCoins = 50;
-      if (appliedReferral.isNotEmpty) {
-        welcomeCoins += 25;
-      }
-
-      await prefs.setBool('is_logged_in', true);
-      await prefs.setString('user_name', name);
-      await prefs.setString('user_email', email);
-      await prefs.setString('user_password', password);
-      await prefs.setInt('user_coins', welcomeCoins);
-      await prefs.setString('my_referral_code', _generateReferralCode());
 
       if (!mounted) return;
-      _showMessage('अकाउंट बन गया! आपको $welcomeCoins Welcome Coins मिले हैं।');
-      _goToHome();
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const HomeDashboard()),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        setState(() => isLoading = false);
+        _showMessage(_friendlyAuthError(e), isError: true);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => isLoading = false);
+        _showMessage('दिक्कत आई: $e', isError: true);
+      }
     }
   }
 
-  // जल्दी टेस्ट करने के लिए 1-क्लिक Demo Account
-  Future<void> _demoLogin() async {
-    setState(() => isLoading = true);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('is_logged_in', true);
-    await prefs.setString('user_name', 'Demo Tester');
-    await prefs.setString('user_email', 'demotester@gmail.com');
-    await prefs.setString('user_password', '123456');
-    await prefs.setInt('user_coins', prefs.getInt('user_coins') ?? 100);
-    await prefs.setString(
-      'my_referral_code',
-      prefs.getString('my_referral_code') ?? 'DEMO786',
-    );
-    if (!mounted) return;
-    _goToHome();
-  }
-
-  void _goToHome() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const Part2HomePreview()),
-    );
+  Future<void> _forgotPassword() async {
+    final email = _emailController.text.trim();
+    if (!email.contains('@')) {
+      _showMessage('पहले ऊपर अपना Gmail लिखें, फिर Forgot Password दबाएं।',
+          isError: true);
+      return;
+    }
+    try {
+      await FirebaseService.sendPasswordReset(email);
+      if (!mounted) return;
+      _showMessage('Password Reset लिंक आपके Gmail पर भेज दिया गया है!');
+    } catch (e) {
+      _showMessage('ईमेल भेजने में दिक्कत आई: $e', isError: true);
+    }
   }
 
   @override
@@ -140,7 +129,6 @@ class _AuthScreenState extends State<AuthScreen> {
             padding: const EdgeInsets.all(20),
             child: Column(
               children: [
-                // App Logo / Header
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -160,12 +148,10 @@ class _AuthScreenState extends State<AuthScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'ऐप्स टेस्ट करें, 10 मिनट खेलें और कॉइन कमाएं!',
+                  'Live Cloud Account • ऐप्स टेस्ट करें और कमाएं!',
                   style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
                 ),
                 const SizedBox(height: 24),
-
-                // Main Card (Single Form Container)
                 Container(
                   padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
@@ -184,7 +170,6 @@ class _AuthScreenState extends State<AuthScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Toggle Switch: Login vs Sign Up
                         Container(
                           padding: const EdgeInsets.all(4),
                           decoration: BoxDecoration(
@@ -195,9 +180,11 @@ class _AuthScreenState extends State<AuthScreen> {
                             children: [
                               Expanded(
                                 child: GestureDetector(
-                                  onTap: () => setState(() => isLoginMode = false),
+                                  onTap: () =>
+                                      setState(() => isLoginMode = false),
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
                                     decoration: BoxDecoration(
                                       color: !isLoginMode
                                           ? const Color(0xFF4F46E5)
@@ -219,9 +206,11 @@ class _AuthScreenState extends State<AuthScreen> {
                               ),
                               Expanded(
                                 child: GestureDetector(
-                                  onTap: () => setState(() => isLoginMode = true),
+                                  onTap: () =>
+                                      setState(() => isLoginMode = true),
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
                                     decoration: BoxDecoration(
                                       color: isLoginMode
                                           ? const Color(0xFF4F46E5)
@@ -245,8 +234,6 @@ class _AuthScreenState extends State<AuthScreen> {
                           ),
                         ),
                         const SizedBox(height: 20),
-
-                        // 1. Full Name (केवल Sign Up में दिखेगा)
                         if (!isLoginMode) ...[
                           TextFormField(
                             controller: _nameController,
@@ -264,8 +251,6 @@ class _AuthScreenState extends State<AuthScreen> {
                           ),
                           const SizedBox(height: 14),
                         ],
-
-                        // 2. Play Store Gmail ID
                         TextFormField(
                           controller: _emailController,
                           keyboardType: TextInputType.emailAddress,
@@ -285,8 +270,6 @@ class _AuthScreenState extends State<AuthScreen> {
                           },
                         ),
                         const SizedBox(height: 14),
-
-                        // 3. Password
                         TextFormField(
                           controller: _passwordController,
                           obscureText: !isPasswordVisible,
@@ -314,10 +297,16 @@ class _AuthScreenState extends State<AuthScreen> {
                             return null;
                           },
                         ),
-                        const SizedBox(height: 14),
-
-                        // 4. Referral Code (केवल Sign Up में)
+                        if (isLoginMode)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: _forgotPassword,
+                              child: const Text('Password भूल गए?'),
+                            ),
+                          ),
                         if (!isLoginMode) ...[
+                          const SizedBox(height: 14),
                           TextFormField(
                             controller: _referralController,
                             decoration: const InputDecoration(
@@ -339,10 +328,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             ),
                           ),
                         ],
-
                         const SizedBox(height: 16),
-
-                        // Submit Button
                         SizedBox(
                           height: 50,
                           child: ElevatedButton(
@@ -355,7 +341,8 @@ class _AuthScreenState extends State<AuthScreen> {
                               ),
                             ),
                             child: isLoading
-                                ? const CircularProgressIndicator(color: Colors.white)
+                                ? const CircularProgressIndicator(
+                                    color: Colors.white)
                                 : Text(
                                     isLoginMode
                                         ? 'Login करें'
@@ -365,21 +352,6 @@ class _AuthScreenState extends State<AuthScreen> {
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                          ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        // Quick Demo Login Button (टेस्टिंग आसान बनाने के लिए)
-                        OutlinedButton.icon(
-                          onPressed: isLoading ? null : _demoLogin,
-                          icon: const Icon(Icons.flash_on, color: Colors.orange),
-                          label: const Text('1-Click Demo Account से टेस्ट करें'),
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
                           ),
                         ),
                       ],

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/task_model.dart';
 import 'auth_screen.dart';
+import 'task_detail_screen.dart';
 
 class HomeDashboard extends StatefulWidget {
   const HomeDashboard({super.key});
@@ -22,6 +23,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
   bool checkedInToday = false;
   int checkInStreak = 0;
 
+  Map<String, int> taskCompletedDays = {};
+  Map<String, bool> taskStartedMap = {};
+  Map<String, bool> taskClaimedTodayMap = {};
+
   @override
   void initState() {
     super.initState();
@@ -38,6 +43,23 @@ class _HomeDashboardState extends State<HomeDashboard> {
     final lastCheckIn = prefs.getString('last_checkin_date') ?? '';
     final today = _getTodayDateString();
 
+    final Map<String, int> daysMap = {};
+    final Map<String, bool> startedMap = {};
+    final Map<String, bool> claimedMap = {};
+
+    for (final task in DemoTaskData.sampleTasks) {
+      final doneDays = prefs.getInt('completed_days_${task.id}') ?? 0;
+      final started = (prefs.getBool('started_${task.id}') ?? false) ||
+          doneDays > 0 ||
+          (prefs.getInt('timer_start_ms_${task.id}') != null);
+      final claimedToday =
+          (prefs.getString('last_claim_date_${task.id}') ?? '') == today;
+
+      daysMap[task.id] = doneDays;
+      startedMap[task.id] = started;
+      claimedMap[task.id] = claimedToday;
+    }
+
     if (!mounted) return;
     setState(() {
       name = prefs.getString('user_name') ?? 'Tester';
@@ -46,6 +68,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
       coins = prefs.getInt('user_coins') ?? 0;
       checkInStreak = prefs.getInt('checkin_streak') ?? 0;
       checkedInToday = (lastCheckIn == today);
+      taskCompletedDays = daysMap;
+      taskStartedMap = startedMap;
+      taskClaimedTodayMap = claimedMap;
     });
   }
 
@@ -54,7 +79,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
     final prefs = await SharedPreferences.getInstance();
     final today = _getTodayDateString();
-    const rewardCoins = 15; // रोज़ाना चेक-इन का बोनस
+    const rewardCoins = 15;
 
     final newCoins = coins + rewardCoins;
     final newStreak = checkInStreak + 1;
@@ -99,116 +124,13 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  void _openTaskPreview(AppTask task) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: const Color(0xFF4F46E5),
-                    child: Icon(
-                      task.isLongTermTesting ? Icons.verified : Icons.timer,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          task.appName,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          '${task.category} • कुल ${task.totalPotentialCoins} Coins (₹${DemoTaskData.coinsToRupees(task.totalPotentialCoins)})',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.indigo.shade700,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'टास्क पूरा करने के नियम:',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  task.instructions,
-                  style: const TextStyle(height: 1.5, fontSize: 13),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.amber.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.amber.shade200),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.orange),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Part 4 में यहाँ Play Store Opt-in लिंक बटन, 10-मिनट का लाइव टाइमर और 14-दिन का ट्रैकर जुड़ेगा!',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF4F46E5),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('ठीक है, समझ गया'),
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+  Future<void> _openTaskDetail(AppTask task) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => TaskDetailScreen(task: task)),
     );
+    // वापस लौटने पर नए कॉइन्स और प्रोग्रेस रिफ्रेश करें
+    _loadDashboardData();
   }
 
   // ---------------- TAB 1: HOME (TASKS) ----------------
@@ -387,7 +309,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
           const SizedBox(height: 18),
 
-          // Category Filter Chips
           const Text(
             'Tasks चुनें और कमाएं',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
@@ -418,8 +339,12 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
           const SizedBox(height: 12),
 
-          // Task List Cards
+          // Task Cards
           ...filteredTasks.map((task) {
+            final doneDays = taskCompletedDays[task.id] ?? 0;
+            final isStarted = taskStartedMap[task.id] ?? false;
+            final isFinished = doneDays >= task.totalTestingDays;
+
             return Container(
               margin: const EdgeInsets.only(bottom: 12),
               decoration: BoxDecoration(
@@ -514,18 +439,24 @@ class _HomeDashboardState extends State<HomeDashboard> {
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
-                            task.category,
+                            isStarted
+                                ? 'Progress: $doneDays / ${task.totalTestingDays} Days'
+                                : task.category,
                             style: TextStyle(
                               fontSize: 11,
-                              color: Colors.grey.shade700,
+                              color: isStarted
+                                  ? const Color(0xFF4F46E5)
+                                  : Colors.grey.shade700,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
                         ElevatedButton(
-                          onPressed: () => _openTaskPreview(task),
+                          onPressed: () => _openTaskDetail(task),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF4F46E5),
+                            backgroundColor: isFinished
+                                ? Colors.green
+                                : const Color(0xFF4F46E5),
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(
                               horizontal: 16,
@@ -535,7 +466,11 @@ class _HomeDashboardState extends State<HomeDashboard> {
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          child: const Text('Start Task →'),
+                          child: Text(
+                            isFinished
+                                ? 'Completed 🏆'
+                                : (isStarted ? 'Continue →' : 'Start Task →'),
+                          ),
                         ),
                       ],
                     ),
@@ -549,34 +484,128 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  // ---------------- TAB 2: MY ACTIVE TESTS ----------------
+  // ---------------- TAB 2: MY ACTIVE TESTS (LIVE) ----------------
   Widget _buildMyTestsTab() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.calendar_month_rounded,
-              size: 72,
-              color: Colors.indigo.shade200,
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'आपके चालू 14-दिन के टेस्ट यहाँ दिखेंगे',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Part 4 में जब हम 10-Min Live Timer और 14-Day Streak जोड़ेंगे, तो आपके शुरू किए गए सभी ऐप्स का प्रोग्रेस (जैसे Day 4 / 14) यहाँ दिखेगा।',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade600, height: 1.5),
-            ),
-          ],
+    final activeTasks = DemoTaskData.sampleTasks
+        .where((t) => taskStartedMap[t.id] == true)
+        .toList();
+
+    if (activeTasks.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.calendar_month_rounded,
+                size: 72,
+                color: Colors.indigo.shade200,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'अभी कोई टेस्ट शुरू नहीं किया है',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Home (Tasks) टैब में जाकर किसी भी ऐप पर "Start Task" दबाएं, वह यहाँ ट्रैक होने लगेगा।',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade600, height: 1.5),
+              ),
+            ],
+          ),
         ),
-      ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: activeTasks.length,
+      itemBuilder: (context, index) {
+        final task = activeTasks[index];
+        final doneDays = taskCompletedDays[task.id] ?? 0;
+        final claimedToday = taskClaimedTodayMap[task.id] ?? false;
+        final isFinished = doneDays >= task.totalTestingDays;
+        final ratio = (doneDays / task.totalTestingDays).clamp(0.0, 1.0);
+
+        return Card(
+          margin: const EdgeInsets.only(bottom: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => _openTaskDetail(task),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          task.appName,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isFinished
+                              ? Colors.green.shade50
+                              : (claimedToday
+                                  ? Colors.blue.shade50
+                                  : Colors.orange.shade50),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          isFinished
+                              ? '100% पूरा 🏆'
+                              : (claimedToday
+                                  ? 'आज का हो गया ✅'
+                                  : 'आज 10 Min बाकी ⏳'),
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: isFinished
+                                ? Colors.green.shade800
+                                : (claimedToday
+                                    ? Colors.blue.shade800
+                                    : Colors.orange.shade800),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(
+                    value: ratio,
+                    minHeight: 8,
+                    borderRadius: BorderRadius.circular(6),
+                    backgroundColor: Colors.grey.shade200,
+                    color: isFinished ? Colors.green : const Color(0xFF4F46E5),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Day $doneDays / ${task.totalTestingDays} Completed • टैप करके खोलें →',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -712,8 +741,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
         ),
         const SizedBox(height: 16),
-
-        // Refer & Earn Card
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -780,8 +807,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
         ),
         const SizedBox(height: 16),
-
-        // Rules & Logout
         Card(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           child: Column(

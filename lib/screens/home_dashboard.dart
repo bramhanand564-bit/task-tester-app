@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/task_model.dart';
+import '../services/app_storage.dart';
+import 'admin_panel_screen.dart';
 import 'auth_screen.dart';
 import 'task_detail_screen.dart';
 import 'wallet_screen.dart';
@@ -16,15 +18,18 @@ class HomeDashboard extends StatefulWidget {
 
 class _HomeDashboardState extends State<HomeDashboard> {
   int _currentTabIndex = 0;
+  int _walletRefreshKey = 0;
   String _selectedCategory = 'All';
 
   String name = 'Tester';
   String email = '';
   String referralCode = 'TASK000';
+  String deviceId = 'DEV-0000';
   int coins = 0;
   bool checkedInToday = false;
   int checkInStreak = 0;
 
+  List<AppTask> allTasks = [];
   Map<String, int> taskCompletedDays = {};
   Map<String, bool> taskStartedMap = {};
   Map<String, bool> taskClaimedTodayMap = {};
@@ -42,6 +47,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
   Future<void> _loadDashboardData() async {
     final prefs = await SharedPreferences.getInstance();
+    final tasks = await AppStorage.getAllTasks();
+    final devId = await AppStorage.getOrCreateDeviceId();
     final lastCheckIn = prefs.getString('last_checkin_date') ?? '';
     final today = _getTodayDateString();
 
@@ -49,7 +56,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     final Map<String, bool> startedMap = {};
     final Map<String, bool> claimedMap = {};
 
-    for (final task in DemoTaskData.sampleTasks) {
+    for (final task in tasks) {
       final doneDays = prefs.getInt('completed_days_${task.id}') ?? 0;
       final started = (prefs.getBool('started_${task.id}') ?? false) ||
           doneDays > 0 ||
@@ -64,6 +71,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
     if (!mounted) return;
     setState(() {
+      allTasks = tasks;
+      deviceId = devId;
       name = prefs.getString('user_name') ?? 'Tester';
       email = prefs.getString('user_email') ?? '';
       referralCode = prefs.getString('my_referral_code') ?? 'TASK000';
@@ -90,7 +99,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
     await prefs.setString('last_checkin_date', today);
     await prefs.setInt('checkin_streak', newStreak);
 
-    // Transaction History में जोड़ें
     final history = prefs.getStringList('wallet_transactions') ?? [];
     history.insert(
       0,
@@ -108,6 +116,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
       coins = newCoins;
       checkInStreak = newStreak;
       checkedInToday = true;
+      _walletRefreshKey++;
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -139,17 +148,63 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
+  void _copyInviteMessage() {
+    final msg =
+        'नमस्ते! TaskEarn & Beta Tester ऐप पर नए ऐप्स को 10 मिनट टेस्ट करके रोज़ कॉइन और UPI कैश कमाएं! '
+        'साइन अप के समय मेरा Referral Code "$referralCode" डालें और +25 एक्स्ट्रा कॉइन पाएं!';
+    Clipboard.setData(ClipboardData(text: msg));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Invite मैसेज कॉपी हो गया! अब WhatsApp/Telegram पर भेजें।'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _showFaqDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('14-Day Testing के नियम & FAQ'),
+        content: const SingleChildScrollView(
+          child: Text(
+            '1. सही Gmail डालें: जिस Gmail से साइन अप किया है, उसी से Play Store Opt-in करें।\n\n'
+            '2. 10 मिनट टाइमर: टास्क पेज पर जाकर Start Timer दबाएं और टेस्ट ऐप को 10 मिनट इस्तेमाल करें।\n\n'
+            '3. 14 दिन लगातार: बीच में ऐप अनइंस्टॉल न करें। 14वें दिन फीडबैक लिखने पर पूरा बोनस मिलेगा।\n\n'
+            '4. Withdrawal: 200 Coins = ₹20 पूरे होते ही आप UPI या Redeem Code से पैसे निकाल सकते हैं।',
+            style: TextStyle(fontSize: 13, height: 1.5),
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('समझ गया'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openTaskDetail(AppTask task) async {
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => TaskDetailScreen(task: task)),
     );
-    _loadDashboardData();
+    await _loadDashboardData();
+    if (mounted) setState(() => _walletRefreshKey++);
+  }
+
+  Future<void> _openAdminPanel() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AdminPanelScreen()),
+    );
+    await _loadDashboardData();
+    if (mounted) setState(() => _walletRefreshKey++);
   }
 
   // ---------------- TAB 1: HOME (TASKS) ----------------
   Widget _buildHomeTab() {
-    final allTasks = DemoTaskData.sampleTasks;
     final filteredTasks = _selectedCategory == 'All'
         ? allTasks
         : allTasks.where((t) => t.category == _selectedCategory).toList();
@@ -355,146 +410,153 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
           const SizedBox(height: 12),
 
-          // Task Cards
-          ...filteredTasks.map((task) {
-            final doneDays = taskCompletedDays[task.id] ?? 0;
-            final isStarted = taskStartedMap[task.id] ?? false;
-            final isFinished = doneDays >= task.totalTestingDays;
-
-            return Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+          if (filteredTasks.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(
+                child: Text('इस कैटेगरी में कोई टास्क उपलब्ध नहीं है।'),
               ),
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: task.isLongTermTesting
-                                ? Colors.indigo.shade50
-                                : Colors.orange.shade50,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Icon(
-                            task.isLongTermTesting
-                                ? Icons.science_outlined
-                                : Icons.flash_on,
-                            color: task.isLongTermTesting
-                                ? const Color(0xFF4F46E5)
-                                : Colors.orange,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                task.appName,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 15,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                '${task.requiredMinutesPerDay} Min/Day • ${task.totalTestingDays} ${task.totalTestingDays > 1 ? "Days" : "Day"}',
-                                style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.green.shade50,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            '+${task.totalPotentialCoins} 🪙',
-                            style: TextStyle(
-                              color: Colors.green.shade800,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            isStarted
-                                ? 'Progress: $doneDays / ${task.totalTestingDays} Days'
-                                : task.category,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: isStarted
-                                  ? const Color(0xFF4F46E5)
-                                  : Colors.grey.shade700,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        ElevatedButton(
-                          onPressed: () => _openTaskDetail(task),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isFinished
-                                ? Colors.green
-                                : const Color(0xFF4F46E5),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                          child: Text(
-                            isFinished
-                                ? 'Completed 🏆'
-                                : (isStarted ? 'Continue →' : 'Start Task →'),
-                          ),
-                        ),
-                      ],
+            )
+          else
+            ...filteredTasks.map((task) {
+              final doneDays = taskCompletedDays[task.id] ?? 0;
+              final isStarted = taskStartedMap[task.id] ?? false;
+              final isFinished = doneDays >= task.totalTestingDays;
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.04),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
                     ),
                   ],
                 ),
-              ),
-            );
-          }),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: task.isLongTermTesting
+                                  ? Colors.indigo.shade50
+                                  : Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              task.isLongTermTesting
+                                  ? Icons.science_outlined
+                                  : Icons.flash_on,
+                              color: task.isLongTermTesting
+                                  ? const Color(0xFF4F46E5)
+                                  : Colors.orange,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  task.appName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '${task.requiredMinutesPerDay} Min/Day • ${task.totalTestingDays} ${task.totalTestingDays > 1 ? "Days" : "Day"}',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade600,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '+${task.totalPotentialCoins} 🪙',
+                              style: TextStyle(
+                                color: Colors.green.shade800,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              isStarted
+                                  ? 'Progress: $doneDays / ${task.totalTestingDays} Days'
+                                  : task.category,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: isStarted
+                                    ? const Color(0xFF4F46E5)
+                                    : Colors.grey.shade700,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => _openTaskDetail(task),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: isFinished
+                                  ? Colors.green
+                                  : const Color(0xFF4F46E5),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: Text(
+                              isFinished
+                                  ? 'Completed 🏆'
+                                  : (isStarted ? 'Continue →' : 'Start Task →'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -502,9 +564,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
   // ---------------- TAB 2: MY ACTIVE TESTS ----------------
   Widget _buildMyTestsTab() {
-    final activeTasks = DemoTaskData.sampleTasks
-        .where((t) => taskStartedMap[t.id] == true)
-        .toList();
+    final activeTasks =
+        allTasks.where((t) => taskStartedMap[t.id] == true).toList();
 
     if (activeTasks.isEmpty) {
       return Center(
@@ -627,10 +688,13 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
   // ---------------- TAB 3: FULL WALLET ----------------
   Widget _buildWalletTab() {
-    return WalletScreen(onBalanceChanged: _loadDashboardData);
+    return WalletScreen(
+      key: ValueKey(_walletRefreshKey),
+      onBalanceChanged: _loadDashboardData,
+    );
   }
 
-  // ---------------- TAB 4: PROFILE & REFER ----------------
+  // ---------------- TAB 4: PROFILE, ADMIN & RULES ----------------
   Widget _buildProfileTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -663,6 +727,15 @@ class _HomeDashboardState extends State<HomeDashboard> {
                         email,
                         style: TextStyle(color: Colors.grey.shade600),
                       ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Device Verified: $deviceId ✅',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.green.shade700,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -671,6 +744,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
         ),
         const SizedBox(height: 16),
+
+        // Refer & Earn Card
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -687,7 +762,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'अपने दोस्तों को यह ऐप भेजें और उन्हें साइन अप के समय अपना कोड डालने को कहें:',
+                'अपने दोस्तों को जोड़ें ताकि 14-दिन की टेस्टिंग जल्दी पूरी हो सके:',
                 style: TextStyle(fontSize: 12),
               ),
               const SizedBox(height: 12),
@@ -714,16 +789,16 @@ class _HomeDashboardState extends State<HomeDashboard> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   ElevatedButton.icon(
                     onPressed: _copyReferralCode,
-                    icon: const Icon(Icons.copy, size: 18),
-                    label: const Text('Copy'),
+                    icon: const Icon(Icons.copy, size: 16),
+                    label: const Text('Code'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF4F46E5),
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
+                        horizontal: 12,
                         vertical: 14,
                       ),
                       shape: RoundedRectangleBorder(
@@ -733,18 +808,44 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   ),
                 ],
               ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _copyInviteMessage,
+                  icon: const Icon(Icons.share),
+                  label: const Text('WhatsApp / Telegram Invite मैसेज कॉपी करें'),
+                ),
+              ),
             ],
           ),
         ),
         const SizedBox(height: 16),
+
+        // Admin Panel, Rules & Logout Card
         Card(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           child: Column(
             children: [
-              const ListTile(
-                leading: Icon(Icons.security, color: Color(0xFF4F46E5)),
-                title: Text('Anti-Cheat नियम'),
-                subtitle: Text('1 Phone = 1 Account • कोई VPN या Emulator नहीं'),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFF1E293B),
+                  child: Icon(Icons.admin_panel_settings, color: Colors.white),
+                ),
+                title: const Text(
+                  'Admin Panel (Owner Only)',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text('नए ऐप्स जोड़ें, पेमेंट अप्रूव करें (PIN: 1234)'),
+                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                onTap: _openAdminPanel,
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.help_outline, color: Color(0xFF4F46E5)),
+                title: const Text('14-Day Testing के नियम & FAQ'),
+                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                onTap: _showFaqDialog,
               ),
               const Divider(height: 1),
               ListTile(
@@ -775,7 +876,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
       'TaskEarn & Beta Tester',
       'My 14-Day Tests',
       'My Wallet',
-      'Profile & Refer',
+      'Profile & Admin',
     ];
 
     return Scaffold(
@@ -784,6 +885,13 @@ class _HomeDashboardState extends State<HomeDashboard> {
         backgroundColor: const Color(0xFF4F46E5),
         foregroundColor: Colors.white,
         elevation: 0,
+        actions: [
+          IconButton(
+            onPressed: _openAdminPanel,
+            icon: const Icon(Icons.admin_panel_settings),
+            tooltip: 'Admin Panel',
+          ),
+        ],
       ),
       body: tabs[_currentTabIndex],
       bottomNavigationBar: NavigationBar(

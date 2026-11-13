@@ -1,0 +1,57 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch: # मैन्युअली बटन दबाकर भी APK बनाने के लिए
+
+jobs:
+  build_apk:
+    name: Build Flutter APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: 4. Generate Android Folder (अगर नहीं है तो)
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create --platforms=android --org com.tasktester --project-name task_tester_app ../temp_app
+            cp -r ../temp_app/android ./android
+            rm -rf ../temp_app
+          fi
+
+      - name: 5. Add Internet Permission
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ] && ! grep -q "android.permission.INTERNET" "$MANIFEST"; then
+            sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' "$MANIFEST"
+          fi
+
+      - name: 6. Install Packages
+        run: flutter pub get
+
+      - name: 7. Build Release APK
+        run: flutter build apk --release
+
+      - name: 8. Upload APK for Download
+        uses: actions/upload-artifact@v4
+        with:
+          name: TaskTester-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14

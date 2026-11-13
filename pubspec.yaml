@@ -10,8 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.6
-  # यूज़र का डेटा (Login, Coins, Task Progress) फोन में सेव रखने के लिए
+  # यूज़र का डेटा सेव रखने के लिए
   shared_preferences: ^2.2.2
+  # Google Group और Play Store Opt-in लिंक खोलने के लिए
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

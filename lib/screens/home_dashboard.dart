@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/task_model.dart';
 import 'auth_screen.dart';
 import 'task_detail_screen.dart';
+import 'wallet_screen.dart';
 
 class HomeDashboard extends StatefulWidget {
   const HomeDashboard({super.key});
@@ -88,6 +90,19 @@ class _HomeDashboardState extends State<HomeDashboard> {
     await prefs.setString('last_checkin_date', today);
     await prefs.setInt('checkin_streak', newStreak);
 
+    // Transaction History में जोड़ें
+    final history = prefs.getStringList('wallet_transactions') ?? [];
+    history.insert(
+      0,
+      jsonEncode({
+        'title': 'Daily Check-in Bonus (Day $newStreak)',
+        'coins': rewardCoins,
+        'type': 'credit',
+        'date': today,
+      }),
+    );
+    await prefs.setStringList('wallet_transactions', history);
+
     if (!mounted) return;
     setState(() {
       coins = newCoins;
@@ -129,7 +144,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
       context,
       MaterialPageRoute(builder: (_) => TaskDetailScreen(task: task)),
     );
-    // वापस लौटने पर नए कॉइन्स और प्रोग्रेस रिफ्रेश करें
     _loadDashboardData();
   }
 
@@ -145,7 +159,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Top Wallet Banner
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
@@ -209,34 +222,37 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   ),
                 ),
                 const SizedBox(width: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        '🪙 $coins',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF4F46E5),
+                GestureDetector(
+                  onTap: () => setState(() => _currentTabIndex = 2),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Column(
+                      children: [
+                        Text(
+                          '🪙 $coins',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF4F46E5),
+                          ),
                         ),
-                      ),
-                      Text(
-                        '≈ ₹${DemoTaskData.coinsToRupees(coins)}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.green.shade700,
+                        Text(
+                          '≈ ₹${DemoTaskData.coinsToRupees(coins)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.green.shade700,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -484,7 +500,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  // ---------------- TAB 2: MY ACTIVE TESTS (LIVE) ----------------
+  // ---------------- TAB 2: MY ACTIVE TESTS ----------------
   Widget _buildMyTestsTab() {
     final activeTasks = DemoTaskData.sampleTasks
         .where((t) => taskStartedMap[t.id] == true)
@@ -609,95 +625,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 
-  // ---------------- TAB 3: WALLET ----------------
+  // ---------------- TAB 3: FULL WALLET ----------------
   Widget _buildWalletTab() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(22),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFF0F766E), Color(0xFF10B981)],
-            ),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'कुल वॉलेट बैलेंस',
-                style: TextStyle(color: Colors.white70, fontSize: 14),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '🪙 $coins',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 5),
-                    child: Text(
-                      '(₹${DemoTaskData.coinsToRupees(coins)})',
-                      style: const TextStyle(
-                        color: Colors.amberAccent,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'Part 5 में यहाँ UPI ID / Redeem Code से पैसे निकालने का पूरा पेज जुड़ेगा!',
-                        ),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.account_balance_wallet),
-                  label: const Text('Withdraw via UPI (Min ₹20 / 200 Coins)'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: const Color(0xFF0F766E),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        const Text(
-          'कमाई का रेट (Conversion Rate):',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 8),
-        const Card(
-          child: ListTile(
-            leading: Icon(Icons.currency_rupee, color: Colors.green),
-            title: Text('10 Coins = ₹1.00'),
-            subtitle: Text('कम से कम 200 Coins (₹20) होने पर UPI Withdrawal'),
-          ),
-        ),
-      ],
-    );
+    return WalletScreen(onBalanceChanged: _loadDashboardData);
   }
 
   // ---------------- TAB 4: PROFILE & REFER ----------------
